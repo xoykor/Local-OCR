@@ -67,28 +67,33 @@ jobs:
 
       - name: Assemble and build AppImage
         env:
-          LDAI_NO_APPSTREAM: "1"
-          LDAI_OUTPUT: ${{ steps.release.outputs.appimage }}
-          LINUXDEPLOY_OUTPUT_APP_NAME: Local-OCR
-          LINUXDEPLOY_OUTPUT_VERSION: ${{ steps.release.outputs.version }}
+          APPIMAGE_FILENAME: ${{ steps.release.outputs.appimage }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          mkdir -p AppDir/usr/lib/local-ocr AppDir/usr/bin
+          mkdir -p \
+            AppDir/usr/lib/local-ocr \
+            AppDir/usr/bin \
+            AppDir/usr/share/applications \
+            AppDir/usr/share/icons/hicolor/scalable/apps
           cp -a dist/LocalOCR/. AppDir/usr/lib/local-ocr/
           ln -s ../lib/local-ocr/LocalOCR AppDir/usr/bin/local-ocr
           install -Dm755 packaging/appimage/AppRun AppDir/AppRun
-          chmod +x AppDir/AppRun
-          linuxdeploy="$RUNNER_TEMP/linuxdeploy-x86_64.AppImage"
-          wget --quiet --output-document="$linuxdeploy" \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x "$linuxdeploy"
-          "$linuxdeploy" \
-            --appdir AppDir \
-            --executable AppDir/usr/lib/local-ocr/LocalOCR \
-            --desktop-file packaging/appimage/org.xoykor.LocalOCR.desktop \
-            --icon-file packaging/appimage/org.xoykor.LocalOCR.svg \
-            --output appimage
-          sha256sum "${{ steps.release.outputs.appimage }}" \
-            > "${{ steps.release.outputs.checksum }}"
+          install -Dm644 packaging/appimage/org.xoykor.LocalOCR.desktop \
+            AppDir/usr/share/applications/org.xoykor.LocalOCR.desktop
+          install -Dm644 packaging/appimage/org.xoykor.LocalOCR.svg \
+            AppDir/usr/share/icons/hicolor/scalable/apps/org.xoykor.LocalOCR.svg
+          ln -s usr/share/applications/org.xoykor.LocalOCR.desktop \
+            AppDir/org.xoykor.LocalOCR.desktop
+          ln -s usr/share/icons/hicolor/scalable/apps/org.xoykor.LocalOCR.svg \
+            AppDir/org.xoykor.LocalOCR.svg
+
+          appimagetool="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          wget --quiet --output-document="$appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$appimagetool"
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 \
+            "$appimagetool" AppDir "$APPIMAGE_FILENAME"
+          sha256sum "$APPIMAGE_FILENAME" > "${{ steps.release.outputs.checksum }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
