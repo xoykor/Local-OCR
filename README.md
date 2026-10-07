@@ -17,6 +17,24 @@ talks only to the Ollama server URL you configure.
 
 ## Installation
 
+### Linux AppImage
+
+Download the latest `Local-OCR-*-x86_64.AppImage` from the
+[GitHub Releases](https://github.com/xoykor/Local-OCR/releases/latest), make it
+executable, and run it:
+
+```bash
+chmod +x Local-OCR-*-x86_64.AppImage
+./Local-OCR-*-x86_64.AppImage
+```
+
+The AppImage bundles the Python application and its Python dependencies. It
+still requires a running Ollama server and a vision-capable model; neither is
+included. AppImage mounting requires FUSE 2 on some distributions. If it is not
+available, install the distribution's `libfuse2` package.
+
+### Run from source
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate

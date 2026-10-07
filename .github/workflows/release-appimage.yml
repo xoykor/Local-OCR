@@ -1,0 +1,122 @@
+name: Build and release AppImage
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+      - "flatpak-v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish (for example, v1.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: Build Linux AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set release asset names
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#flatpak-v}"
+          version="${version#v}"
+          version="${version//\//-}"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "appimage=Local-OCR-$version-x86_64.AppImage" >> "$GITHUB_OUTPUT"
+          echo "checksum=Local-OCR-$version-x86_64.AppImage.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfuse2 python3-tk python3-venv wget
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt pyinstaller
+
+      - name: Package Python application
+        run: |
+          .venv/bin/pyinstaller --noconfirm --clean --windowed \
+            --name LocalOCR \
+            --collect-all customtkinter \
+            --collect-all PIL \
+            --collect-all pymupdf \
+            --collect-all ollama \
+            main.py
+          pillow_libs="$(.venv/bin/python -c 'import pathlib, PIL; print(next(pathlib.Path(PIL.__file__).parent.parent.glob("pillow.libs")))')"
+          mkdir -p dist/LocalOCR/_internal/pillow.libs
+          cp -a "$pillow_libs/." dist/LocalOCR/_internal/pillow.libs/
+
+      - name: Assemble and build AppImage
+        env:
+          APPIMAGE_FILENAME: ${{ steps.release.outputs.appimage }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir -p \
+            AppDir/usr/lib/local-ocr \
+            AppDir/usr/bin \
+            AppDir/usr/share/applications \
+            AppDir/usr/share/icons/hicolor/scalable/apps
+          cp -a dist/LocalOCR/. AppDir/usr/lib/local-ocr/
+          ln -s ../lib/local-ocr/LocalOCR AppDir/usr/bin/local-ocr
+          install -Dm755 packaging/appimage/AppRun AppDir/AppRun
+          install -Dm644 packaging/appimage/org.xoykor.LocalOCR.desktop \
+            AppDir/usr/share/applications/org.xoykor.LocalOCR.desktop
+          install -Dm644 packaging/appimage/org.xoykor.LocalOCR.svg \
+            AppDir/usr/share/icons/hicolor/scalable/apps/org.xoykor.LocalOCR.svg
+          ln -s usr/share/applications/org.xoykor.LocalOCR.desktop \
+            AppDir/org.xoykor.LocalOCR.desktop
+          ln -s usr/share/icons/hicolor/scalable/apps/org.xoykor.LocalOCR.svg \
+            AppDir/org.xoykor.LocalOCR.svg
+
+          appimagetool="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          wget --quiet --output-document="$appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$appimagetool"
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 \
+            "$appimagetool" AppDir "$APPIMAGE_FILENAME"
+          sha256sum "$APPIMAGE_FILENAME" > "${{ steps.release.outputs.checksum }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Local-OCR-${{ steps.release.outputs.version }}-x86_64-AppImage
+          path: |
+            ${{ steps.release.outputs.appimage }}
+            ${{ steps.release.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Publish AppImage to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          APPIMAGE: ${{ steps.release.outputs.appimage }}
+          CHECKSUM: ${{ steps.release.outputs.checksum }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$APPIMAGE" "$CHECKSUM" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$APPIMAGE" "$CHECKSUM" \
+              --title "Local OCR $RELEASE_VERSION" \
+              --generate-notes
+          fi
