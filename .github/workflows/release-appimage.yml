@@ -35,6 +35,7 @@ jobs:
         run: |
           version="${RELEASE_TAG#flatpak-v}"
           version="${version#v}"
+          version="${version//\//-}"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "appimage=Local-OCR-$version-x86_64.AppImage" >> "$GITHUB_OUTPUT"
@@ -52,14 +53,17 @@ jobs:
           .venv/bin/python -m pip install -r requirements.txt pyinstaller
 
       - name: Package Python application
-        run: >-
-          .venv/bin/pyinstaller --noconfirm --clean --windowed
-          --name LocalOCR
-          --collect-all customtkinter
-          --collect-all PIL
-          --collect-all pymupdf
-          --collect-all ollama
-          main.py
+        run: |
+          .venv/bin/pyinstaller --noconfirm --clean --windowed \
+            --name LocalOCR \
+            --collect-all customtkinter \
+            --collect-all PIL \
+            --collect-all pymupdf \
+            --collect-all ollama \
+            main.py
+          pillow_libs="$(.venv/bin/python -c 'import pathlib, PIL; print(next(pathlib.Path(PIL.__file__).parent.parent.glob("pillow.libs")))')"
+          mkdir -p dist/LocalOCR/_internal/pillow.libs
+          cp -a "$pillow_libs/." dist/LocalOCR/_internal/pillow.libs/
 
       - name: Assemble and build AppImage
         env:
