@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Local OCR
+Comment=Convert PDFs and images to Markdown with a local Ollama server
+Exec=local-ocr
+Icon=org.xoykor.LocalOCR
+Categories=Graphics;Utility;
+Terminal=false
+StartupNotify=true
