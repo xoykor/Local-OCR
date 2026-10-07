@@ -1,0 +1,62 @@
+# Flatpak release of Local OCR — via GitHub Actions
+
+This directory holds everything needed to build a **Flatpak** of
+[Local-OCR](https://github.com/xoykor/Local-OCR) through CI. It is meant to be
+committed into the `xoykor/Local-OCR` repository (default branch `master`).
+
+> This environment does **not** build Flatpaks locally — builds are triggered by
+> GitHub Actions only. Do not run `flatpak-builder` here.
+
+## Files
+
+```
+.github/workflows/flatpak.yml          # CI: builds + uploads the Flatpak bundle
+flatpak-builder/org.xoykor.LocalOCR.yaml  # Flatpak manifest (app-id org.xoykor.LocalOCR)
+README.md                              # this file
+```
+
+### Manifest (`org.xoykor.LocalOCR.yaml`)
+
+- `runtime`: `org.freedesktop.Platform/stable/x86_64` — ships **Python with
+  tkinter bundled**, which is what `customtkinter` needs.
+- A single `python` module installs the app's third-party deps via pip into that
+  interpreter: `customtkinter`, `Pillow`, `PyMuPDF`, `ollama` (the versions from
+  `requirements.txt`).
+- `command: main.py` — the repo's entry point.
+
+### Workflow (`flatpak.yml`)
+
+Two jobs, both driven by the official
+[`flatpak/flatpak-github-actions`](https://github.com/flatpak/flatpak-github-actions):
+
+1. **`flatpak`** — builds `org.xoykor.LocalOCR.Devel-<arch>.flatpak` for
+   `x86_64` (and optionally `aarch64`, gated behind the `build_aarch64` dispatch
+   input, which needs Docker + QEMU). The resulting bundle is uploaded as a
+   GitHub Actions artifact.
+2. **`tests`** — installs `requirements.txt` in a venv and runs the repo's
+   `unittest` suite under `xvfb-run` so the GUI smoke tests actually execute
+   (they auto-skip without a display).
+
+Triggers: push to `master`, pull requests, and manual dispatch.
+
+## Assumptions / notes
+
+- The freedesktop **SDK ships a `python` module** (`modules/python.xml`) that is
+  standard Flathub infrastructure — it adds pip/venv on top of the platform's
+  bundled Python (which includes tkinter). This is what lets us pip-install into
+  the runtime interpreter.
+- No `meson.build` / build system is required: the only module (`python`) does
+  not compile anything, so flatpak-builder builds a plain bundle.
+- For **Flathub submission** you additionally need a `meta-info.xml` (icons,
+  screenshots) and to strip the `-Devel` tag; that publishing step is separate
+  from this build workflow.
+
+## Manual test run of the manifest (optional, needs root + network)
+
+To sanity-check the manifest outside CI (not part of normal flow):
+
+```bash
+flatpak remote-add --if-not-present flathub https://flathub.org/repo/flathub.json
+flatpak build-bundle flatpak-builder/org.xoykor.LocalOCR.yaml \
+  org.xoykor.LocalOCR.Devel-x86_64.flatpak 1.0+git
+```
