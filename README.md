@@ -2,8 +2,8 @@
 
 A local, privacy-focused desktop application that converts PDFs and images to
 structured Markdown using Vision-Language models served by
-[Ollama](https://ollama.com). Nothing leaves your machine or network: the app
-talks only to the Ollama server URL you configure.
+[Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). Nothing leaves your machine or network: the app
+talks only to the server URL you configure.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ talks only to the Ollama server URL you configure.
   Both Tk 8.6 and Tk 9.0 work with the pinned customtkinter version
   (customtkinter 6.x; older 5.2.x renders blank windows under Tk 9.0 on
   macOS).
-- A running Ollama server — locally or reachable on your network. The app
+- A running Ollama or LM Studio server — locally or reachable on your network. The app
   never starts, installs, or pulls anything itself.
 - A vision-capable model installed on that server.
 
@@ -47,7 +47,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Setting up Ollama
+## Setting up the Backend
+
+The app supports two backends: **Ollama** and **LM Studio**. Select the backend
+in the app's settings and configure the corresponding server.
+
+### Ollama
 
 The app requires an Ollama server that is already running. To see which
 models a server has installed:
@@ -67,8 +72,7 @@ examples only — they are not guaranteed to exist on your server and are never
 pulled automatically. Use `Refresh Models` to list what your server actually
 has, or type any model tag manually.
 
-### Server URL
-
+**Server URL:**
 - Local Ollama: keep the default `http://localhost:11434`.
 - Ollama on another machine: use its address, e.g.
   `http://192.168.1.50:11434`.
@@ -76,6 +80,23 @@ has, or type any model tag manually.
 **Network safety:** exposing Ollama beyond localhost makes it reachable by
 anyone who can connect to that port. Only bind it to a trusted network and
 protect it with your firewall; Ollama has no built-in authentication.
+
+### LM Studio
+
+1. Download and install [LM Studio](https://lmstudio.ai).
+2. Open LM Studio and download a vision-capable model (e.g., from the
+   "Vision" category in the model browser).
+3. Start the local API server:
+   - Click the "Local Server" tab in LM Studio.
+   - Select your vision model and click "Start Server".
+   - The server runs on `http://localhost:1234` by default.
+4. In the app, select "LM Studio" as the backend. The URL should be
+   `http://localhost:1234/v1` (the app uses the OpenAI-compatible API).
+5. Use `Refresh Models` to list the models available in LM Studio, or type
+   the model identifier manually (e.g., `qwen2.5-vl-7b-instruct`).
+
+**Note:** LM Studio's OpenAI-compatible API requires the URL to include
+`/v1` (e.g., `http://localhost:1234/v1`). The app handles this automatically.
 
 ## Usage
 
@@ -113,7 +134,9 @@ atomically, so a failed run never leaves a partial result.
 
 | Symptom | Likely cause and fix |
 | --- | --- |
-| `connection refused` | Ollama is not running, or the URL/port is wrong. Start Ollama (`ollama serve` or the desktop app) and verify the URL. |
+| `connection refused` | The backend server is not running, or the URL/port is wrong. Start Ollama (`ollama serve` or the desktop app) or LM Studio (start the local server) and verify the URL. |
 | Timeout | Server unreachable (wrong LAN address, firewall) or the model is too slow for the page. Try a smaller model or lower DPI. |
-| `model not found` | The tag is not installed on that server. Check `ollama list` and `ollama pull <tag>` on the server. Models are never pulled automatically. |
+| `model not found` | The tag is not installed on that server. Check `ollama list` and `ollama pull <tag>` for Ollama, or load the model in LM Studio. Models are never pulled automatically. |
 | Empty or garbage output / "returned no text" | The selected model has no vision support. Choose a vision-capable model. |
+| LM Studio: `404 Not Found` | The URL must include `/v1` (e.g., `http://localhost:1234/v1`). The app handles this automatically, but verify the URL format. |
+| LM Studio: `model not found` | The model identifier is wrong or the model is not loaded. Use `Refresh Models` to see available models, or check the model identifier in LM Studio. |

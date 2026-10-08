@@ -1,4 +1,4 @@
-"""Service layer for Local OCR: validation, PDF rendering, Ollama, saving.
+"""Service layer for Local OCR: validation, PDF rendering, Ollama/LM Studio, saving.
 
 This module must stay free of Tk imports so every function can be tested
 headlessly and no worker can accidentally touch the GUI.
@@ -6,7 +6,9 @@ headlessly and no worker can accidentally touch the GUI.
 
 from __future__ import annotations
 
+import base64
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -40,25 +42,28 @@ class OCRRequest:
     ollama_url: str
     model: str
     dpi: int
+    backend: str = config.BACKEND_OLLAMA  # "ollama" or "lmstudio"
 
 
 def normalize_ollama_url(value: str) -> str:
-    """Validate a user-entered Ollama base URL and return it normalized.
+    """Validate a user-entered server URL and return it normalized.
 
     Keeps any path prefix so reverse-proxy URLs work; never appends /api
     because the official client handles API paths itself.
+    Works for both Ollama (http://localhost:11434) and LM Studio 
+    (http://localhost:1234/v1) URLs.
     """
     url = value.strip().rstrip("/")
     if not url:
-        raise ValueError("Ollama server URL is empty.")
+        raise ValueError("Server URL is empty.")
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(
-            "Ollama server URL must start with http:// or https:// "
+            "Server URL must start with http:// or https:// "
             f"(got: {value.strip()!r})."
         )
     if not parsed.netloc:
-        raise ValueError(f"Ollama server URL has no host: {value.strip()!r}.")
+        raise ValueError(f"Server URL has no host: {value.strip()!r}.")
     return url
 
 
@@ -82,8 +87,14 @@ def build_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}_extracted.md")
 
 
-def list_models(url: str) -> list[str]:
-    """Fetch model tags from an Ollama server, deduplicated and sorted."""
+def list_models(url: str, backend: str = config.BACKEND_OLLAMA) -> list[str]:
+    """Fetch model tags from a server, deduplicated and sorted.
+    
+    Supports both Ollama (native API) and LM Studio (OpenAI-compatible API).
+    """
+    if backend == config.BACKEND_LMSTUDIO:
+        return list_models_lmstudio(url)
+    
     try:
         client = ollama.Client(host=url, timeout=config.MODEL_LIST_TIMEOUT)
         response = client.list()
@@ -91,6 +102,29 @@ def list_models(url: str) -> list[str]:
             (getattr(item, "model", None) or "").strip()
             for item in response.models
         }
+    except Exception as exc:
+        raise OCRServiceError(f"Could not fetch models from {url}: {exc}") from exc
+    tags.discard("")
+    return sorted(tags, key=str.lower)
+
+
+def list_models_lmstudio(url: str) -> list[str]:
+    """Fetch model identifiers from an LM Studio server (OpenAI-compatible)."""
+    import requests
+    
+    try:
+        # LM Studio uses /v1/models endpoint (OpenAI-compatible)
+        # The URL should already include /v1 (e.g., http://localhost:1234/v1)
+        base_url = url.rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url = f"{base_url}/v1"
+        
+        response = requests.get(f"{base_url}/models", timeout=config.MODEL_LIST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        # OpenAI format: {"data": [{"id": "model-name", ...}, ...]}
+        tags = {item.get("id", "").strip() for item in data.get("data", [])}
     except Exception as exc:
         raise OCRServiceError(f"Could not fetch models from {url}: {exc}") from exc
     tags.discard("")
@@ -156,12 +190,13 @@ def make_thumbnail_png(image_path: Path, max_side: int) -> bytes:
 
 
 def recognize_images(
-    client: "ollama.Client",
+    client,
     model: str,
     image_paths: list[Path],
     log_callback: LogCallback,
     progress_callback: ProgressCallback | None = None,
     event_callback: EventCallback | None = None,
+    backend: str = config.BACKEND_OLLAMA,
 ) -> list[str]:
     """Send one independent chat request per image; return texts in order.
 
@@ -172,7 +207,14 @@ def recognize_images(
     ``("page_text", {"page": n, "total": N, "text": text})`` event is
     emitted.  The non-streaming result is identical — streaming only adds
     the live deltas.
+    
+    Supports both Ollama (native API) and LM Studio (OpenAI-compatible API).
     """
+    if backend == config.BACKEND_LMSTUDIO:
+        return recognize_images_lmstudio(
+            client, model, image_paths, log_callback, progress_callback, event_callback
+        )
+    
     total = len(image_paths)
     results: list[str] = []
     for number, image_path in enumerate(image_paths, start=1):
@@ -225,6 +267,125 @@ def recognize_images(
         if not content:
             raise OCRServiceError(
                 f"Ollama returned no text for page {number}/{total} "
+                f"(model {model!r})."
+            )
+        results.append(content)
+        if event_callback is not None:
+            event_callback(
+                "page_text",
+                {"page": number, "total": total, "text": content},
+            )
+    return results
+
+
+def recognize_images_lmstudio(
+    client,
+    model: str,
+    image_paths: list[Path],
+    log_callback: LogCallback,
+    progress_callback: ProgressCallback | None = None,
+    event_callback: EventCallback | None = None,
+) -> list[str]:
+    """Send images to LM Studio using OpenAI-compatible API with streaming."""
+    import requests
+    
+    total = len(image_paths)
+    results: list[str] = []
+    
+    for number, image_path in enumerate(image_paths, start=1):
+        if progress_callback is not None:
+            progress_callback("ocr", number, total)
+        if event_callback is not None:
+            # A failed preview must never abort OCR: log it and move on.
+            try:
+                png = make_thumbnail_png(image_path, config.THUMBNAIL_MAX_SIDE)
+            except Exception as exc:
+                log_callback(
+                    f"Could not build preview for page {number}/{total}: {exc}"
+                )
+            else:
+                event_callback(
+                    "page_image",
+                    {"page": number, "total": total, "png": png},
+                )
+        log_callback(f"Sending page {number}/{total} to LM Studio...")
+        
+        # Convert image to base64 data URL (OpenAI format)
+        try:
+            with open(image_path, "rb") as img_file:
+                img_data = base64.b64encode(img_file.read()).decode("utf-8")
+            # Determine MIME type from file extension
+            ext = image_path.suffix.lower()
+            mime_type = {".png": "image/png", ".jpg": "image/jpeg", 
+                        ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(ext, "image/png")
+            data_url = f"data:{mime_type};base64,{img_data}"
+        except Exception as exc:
+            raise OCRServiceError(
+                f"Failed to encode image for page {number}/{total}: {exc}"
+            ) from exc
+        
+        # Build OpenAI-format request
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": config.SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": config.USER_PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            "stream": True,
+        }
+        
+        chunks: list[str] = []
+        try:
+            # Get base URL from client (it's stored as client.base_url)
+            base_url = str(client.base_url).rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+            
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                stream=True,
+                timeout=config.OCR_STREAM_IDLE_TIMEOUT,
+            )
+            response.raise_for_status()
+            
+            # Parse SSE stream
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data = line[6:]  # Remove "data: " prefix
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk_data = json.loads(data)
+                    delta = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if delta:
+                        chunks.append(delta)
+                        if event_callback is not None:
+                            event_callback(
+                                "stream_chunk",
+                                {"page": number, "text": delta},
+                            )
+                except json.JSONDecodeError:
+                    continue
+                    
+        except Exception as exc:
+            raise OCRServiceError(
+                f"LM Studio request failed on page {number}/{total} "
+                f"(model {model!r}): {exc}"
+            ) from exc
+        
+        content = "".join(chunks).strip()
+        if not content:
+            raise OCRServiceError(
+                f"LM Studio returned no text for page {number}/{total} "
                 f"(model {model!r})."
             )
         results.append(content)
@@ -340,13 +501,22 @@ def process_ocr(request: OCRRequest, event_queue) -> Path:
             image_paths = [request.input_path]
 
         try:
-            client = ollama.Client(
-                host=request.ollama_url,
-                timeout=config.OCR_STREAM_IDLE_TIMEOUT,
-            )
+            if request.backend == config.BACKEND_LMSTUDIO:
+                # LM Studio uses OpenAI-compatible API
+                # We create a simple object with base_url attribute
+                class LMStudioClient:
+                    def __init__(self, base_url: str):
+                        self.base_url = base_url
+                
+                client = LMStudioClient(request.ollama_url)
+            else:
+                client = ollama.Client(
+                    host=request.ollama_url,
+                    timeout=config.OCR_STREAM_IDLE_TIMEOUT,
+                )
         except Exception as exc:
             raise OCRServiceError(
-                f"Could not create Ollama client for {request.ollama_url}: {exc}"
+                f"Could not create client for {request.ollama_url}: {exc}"
             ) from exc
 
         page_texts = recognize_images(
@@ -356,6 +526,7 @@ def process_ocr(request: OCRRequest, event_queue) -> Path:
             lambda message: log(f"[2/3] {message}"),
             progress,
             emit_event,
+            backend=request.backend,
         )
 
         log("[3/3] Saving Markdown...")

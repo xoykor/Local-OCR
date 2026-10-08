@@ -1,10 +1,20 @@
 """Configuration constants for the Local OCR application."""
 
+# Backend options
+BACKEND_OLLAMA = "ollama"
+BACKEND_LMSTUDIO = "lmstudio"
+BACKEND_OPTIONS = [BACKEND_OLLAMA, BACKEND_LMSTUDIO]
+
+DEFAULT_BACKEND = BACKEND_OLLAMA
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_LMSTUDIO_URL = "http://localhost:1234/v1"
 
 # Suggestions only. These tags are never assumed to exist on the server and
 # are never pulled automatically.
-EXAMPLE_MODELS = ["gemma4:12b", "qwen3.6:27b"]
+EXAMPLE_MODELS = {
+    BACKEND_OLLAMA: ["gemma4:12b", "qwen3.6:27b"],
+    BACKEND_LMSTUDIO: ["qwen2.5-vl-7b-instruct", "llava-v1.6-mistral-7b"],
+}
 
 DPI_OPTIONS = [100, 150, 200, 300]
 DEFAULT_DPI = 150

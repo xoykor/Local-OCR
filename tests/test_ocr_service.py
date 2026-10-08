@@ -751,7 +751,7 @@ class TestProcessOcr(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
-    def make_request(self, name, dpi=150):
+    def make_request(self, name, dpi=150, backend=config.BACKEND_OLLAMA):
         input_path = self.dir / name
         input_path.write_bytes(b"fake bytes")
         return OCRRequest(
@@ -760,6 +760,7 @@ class TestProcessOcr(unittest.TestCase):
             ollama_url=self.URL,
             model=self.MODEL,
             dpi=dpi,
+            backend=backend,
         )
 
     def run_pdf_pipeline(self, request, document, chat_side_effect,

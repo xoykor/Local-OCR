@@ -102,30 +102,43 @@ class LocalOCRApp(ctk.CTk):
         settings.grid(row=1, column=0, sticky="ew", padx=PADX, pady=4)
         settings.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(settings, text="Ollama server URL").grid(
+        ctk.CTkLabel(settings, text="Backend").grid(
             row=0, column=0, sticky="w", padx=PADX, pady=(PADY, 4)
+        )
+        self.backend_combobox = ctk.CTkComboBox(
+            settings,
+            values=config.BACKEND_OPTIONS,
+            state="readonly",
+            width=120,
+            command=self._on_backend_change,
+        )
+        self.backend_combobox.set(config.DEFAULT_BACKEND)
+        self.backend_combobox.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=(PADY, 4))
+
+        ctk.CTkLabel(settings, text="Server URL").grid(
+            row=1, column=0, sticky="w", padx=PADX, pady=4
         )
         self.url_entry = ctk.CTkEntry(settings)
         self.url_entry.insert(0, config.DEFAULT_OLLAMA_URL)
-        self.url_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(PADY, 4))
+        self.url_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
         self.refresh_button = ctk.CTkButton(
             settings, text="Refresh Models", width=130, command=self.refresh_models
         )
-        self.refresh_button.grid(row=0, column=2, padx=(0, PADX), pady=(PADY, 4))
+        self.refresh_button.grid(row=1, column=2, padx=(0, PADX), pady=4)
 
         ctk.CTkLabel(settings, text="Model").grid(
-            row=1, column=0, sticky="w", padx=PADX, pady=4
+            row=2, column=0, sticky="w", padx=PADX, pady=4
         )
         self.model_combobox = ctk.CTkComboBox(
-            settings, values=list(config.EXAMPLE_MODELS)
+            settings, values=list(config.EXAMPLE_MODELS[config.DEFAULT_BACKEND])
         )
         self.model_combobox.set("")  # suggestions are not installed models
         self.model_combobox.grid(
-            row=1, column=1, columnspan=2, sticky="ew", padx=(0, PADX), pady=4
+            row=2, column=1, columnspan=2, sticky="ew", padx=(0, PADX), pady=4
         )
 
         ctk.CTkLabel(settings, text="PDF DPI").grid(
-            row=2, column=0, sticky="w", padx=PADX, pady=(4, PADY)
+            row=3, column=0, sticky="w", padx=PADX, pady=(4, PADY)
         )
         self.dpi_combobox = ctk.CTkComboBox(
             settings,
@@ -134,7 +147,7 @@ class LocalOCRApp(ctk.CTk):
             width=120,
         )
         self.dpi_combobox.set(str(config.DEFAULT_DPI))
-        self.dpi_combobox.grid(row=2, column=1, sticky="w", pady=(4, PADY))
+        self.dpi_combobox.grid(row=3, column=1, sticky="w", pady=(4, PADY))
 
         # Action + feedback section
         self.start_button = ctk.CTkButton(
@@ -419,12 +432,14 @@ class LocalOCRApp(ctk.CTk):
     # ---------------------------------------------------- control states
 
     def _apply_refresh_busy_state(self) -> None:
+        self.backend_combobox.configure(state="disabled")
         self.url_entry.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.start_button.configure(state="disabled")
 
     def _apply_ocr_busy_state(self) -> None:
         self.select_button.configure(state="disabled")
+        self.backend_combobox.configure(state="disabled")
         self.url_entry.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.model_combobox.configure(state="disabled")
@@ -443,6 +458,7 @@ class LocalOCRApp(ctk.CTk):
 
     def _restore_idle(self) -> None:
         self.select_button.configure(state="normal")
+        self.backend_combobox.configure(state="readonly")
         self.url_entry.configure(state="normal")
         self.refresh_button.configure(state="normal")
         self.model_combobox.configure(state="normal")
@@ -477,6 +493,20 @@ class LocalOCRApp(ctk.CTk):
         self.selected_path = path
         self.file_label.configure(text=path.name)
 
+    # ------------------------------------------------------ backend change
+
+    def _on_backend_change(self, backend: str) -> None:
+        """Update default URL and model suggestions when backend changes."""
+        if backend == config.BACKEND_LMSTUDIO:
+            self.url_entry.delete(0, "end")
+            self.url_entry.insert(0, config.DEFAULT_LMSTUDIO_URL)
+            self.model_combobox.configure(values=list(config.EXAMPLE_MODELS[config.BACKEND_LMSTUDIO]))
+        else:
+            self.url_entry.delete(0, "end")
+            self.url_entry.insert(0, config.DEFAULT_OLLAMA_URL)
+            self.model_combobox.configure(values=list(config.EXAMPLE_MODELS[config.BACKEND_OLLAMA]))
+        self.model_combobox.set("")
+
     # ------------------------------------------------------ model refresh
 
     def refresh_models(self) -> None:
@@ -487,16 +517,17 @@ class LocalOCRApp(ctk.CTk):
         except ValueError as exc:
             messagebox.showerror("Invalid URL", str(exc), parent=self)
             return
+        backend = self.backend_combobox.get()
         self.operation_state = OperationState.REFRESHING_MODELS
         self._apply_refresh_busy_state()
         self.append_log(f"Refreshing model list from {url}...")
         threading.Thread(
-            target=self._refresh_worker, args=(url,), daemon=True
+            target=self._refresh_worker, args=(url, backend), daemon=True
         ).start()
 
-    def _refresh_worker(self, url: str) -> None:
+    def _refresh_worker(self, url: str, backend: str) -> None:
         try:
-            models = ocr_service.list_models(url)
+            models = ocr_service.list_models(url, backend)
         except Exception as exc:
             self.event_queue.put(("refresh_error", str(exc)))
         else:
@@ -615,7 +646,7 @@ class LocalOCRApp(ctk.CTk):
         model = self.model_combobox.get().strip()
         if not model:
             messagebox.showerror(
-                "No model", "Enter or select an Ollama model tag.", parent=self
+                "No model", "Enter or select a model tag.", parent=self
             )
             return
         try:
@@ -640,17 +671,19 @@ class LocalOCRApp(ctk.CTk):
             if not overwrite:
                 return
 
+        backend = self.backend_combobox.get()
         request = OCRRequest(
             input_path=input_path,
             output_path=output_path,
             ollama_url=url,
             model=model,
             dpi=dpi,
+            backend=backend,
         )
         self.operation_state = OperationState.PROCESSING_OCR
         self._apply_ocr_busy_state()
         self.append_log(f"[Start] Input: {input_path}")
-        self.append_log(f"[Start] Ollama: {url} | Model: {model}")
+        self.append_log(f"[Start] Backend: {backend} | URL: {url} | Model: {model}")
         threading.Thread(
             target=self._ocr_worker, args=(request,), daemon=True
         ).start()
